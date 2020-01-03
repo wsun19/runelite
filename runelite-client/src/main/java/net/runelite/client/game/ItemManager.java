@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -55,6 +56,7 @@ import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.PostItemComposition;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.util.AsyncBufferedImage;
 import net.runelite.http.api.item.ItemClient;
 import net.runelite.http.api.item.ItemPrice;
 import net.runelite.http.api.item.ItemStats;
@@ -83,7 +85,7 @@ public class ItemManager
 	private final ScheduledExecutorService scheduledExecutorService;
 	private final ClientThread clientThread;
 
-	private final ItemClient itemClient = new ItemClient();
+	private final ItemClient itemClient;
 	private Map<Integer, ItemPrice> itemPrices = Collections.emptyMap();
 	private Map<Integer, ItemStats> itemStats = Collections.emptyMap();
 	private final LoadingCache<ImageKey, AsyncBufferedImage> itemImages;
@@ -154,11 +156,13 @@ public class ItemManager
 		build();
 
 	@Inject
-	public ItemManager(Client client, ScheduledExecutorService executor, ClientThread clientThread)
+	public ItemManager(Client client, ScheduledExecutorService executor, ClientThread clientThread,
+		ItemClient itemClient)
 	{
 		this.client = client;
 		this.scheduledExecutorService = executor;
 		this.clientThread = clientThread;
+		this.itemClient = itemClient;
 
 		scheduledExecutorService.scheduleWithFixedDelay(this::loadPrices, 0, 30, TimeUnit.MINUTES);
 		scheduledExecutorService.submit(this::loadStats);
@@ -274,6 +278,18 @@ public class ItemManager
 	 */
 	public int getItemPrice(int itemID)
 	{
+		return getItemPrice(itemID, false);
+	}
+
+	/**
+	 * Look up an item's price
+	 *
+	 * @param itemID item id
+	 * @param ignoreUntradeableMap should the price returned ignore the {@link UntradeableItemMapping}
+	 * @return item price
+	 */
+	public int getItemPrice(int itemID, boolean ignoreUntradeableMap)
+	{
 		if (itemID == ItemID.COINS_995)
 		{
 			return 1;
@@ -283,10 +299,13 @@ public class ItemManager
 			return 1000;
 		}
 
-		UntradeableItemMapping p = UntradeableItemMapping.map(ItemVariationMapping.map(itemID));
-		if (p != null)
+		if (!ignoreUntradeableMap)
 		{
-			return getItemPrice(p.getPriceID()) * p.getQuantity();
+			UntradeableItemMapping p = UntradeableItemMapping.map(ItemVariationMapping.map(itemID));
+			if (p != null)
+			{
+				return getItemPrice(p.getPriceID()) * p.getQuantity();
+			}
 		}
 
 		int price = 0;
@@ -348,6 +367,7 @@ public class ItemManager
 	 * @param itemId item id
 	 * @return item composition
 	 */
+	@Nonnull
 	public ItemComposition getItemComposition(int itemId)
 	{
 		assert client.isClientThread() : "getItemComposition must be called on client thread";
@@ -396,7 +416,7 @@ public class ItemManager
 				return false;
 			}
 			sprite.toBufferedImage(img);
-			img.changed();
+			img.loaded();
 			return true;
 		});
 		return img;

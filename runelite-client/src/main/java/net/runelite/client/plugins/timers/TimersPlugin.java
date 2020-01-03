@@ -26,7 +26,7 @@
 package net.runelite.client.plugins.timers;
 
 import com.google.inject.Provides;
-import java.awt.image.BufferedImage;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
@@ -43,18 +43,17 @@ import net.runelite.api.ItemID;
 import net.runelite.api.NPC;
 import net.runelite.api.NpcID;
 import net.runelite.api.Player;
-import net.runelite.api.Prayer;
 import net.runelite.api.Varbits;
 import net.runelite.api.WorldType;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.ChatMessage;
-import net.runelite.api.events.ConfigChanged;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.GraphicChanged;
 import net.runelite.api.events.ItemContainerChanged;
-import net.runelite.api.events.LocalPlayerDeath;
+import net.runelite.api.events.PlayerDeath;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.VarbitChanged;
@@ -105,10 +104,13 @@ public class TimersPlugin extends Plugin
 	private static final String SUPER_ANTIFIRE_DRINK_MESSAGE = "You drink some of your super antifire potion";
 	private static final String SUPER_ANTIFIRE_EXPIRED_MESSAGE = "<col=7f007f>Your super antifire potion has expired.</col>";
 	private static final String SUPER_ANTIVENOM_DRINK_MESSAGE = "You drink some of your super antivenom potion";
+	private static final String KILLED_TELEBLOCK_OPPONENT_TEXT = "<col=4f006f>Your Tele Block has been removed because you killed ";
+	private static final String PRAYER_ENHANCE_EXPIRED = "<col=ff0000>Your prayer enhance effect has worn off.</col>";
 
-	private static final Pattern DEADMAN_HALF_TELEBLOCK_PATTERN = Pattern.compile("<col=4f006f>A Tele Block spell has been cast on you by (.+). It will expire in 1 minute, 15 seconds.</col>");
-	private static final Pattern FULL_TELEBLOCK_PATTERN = Pattern.compile("<col=4f006f>A Tele Block spell has been cast on you by (.+). It will expire in 5 minutes, 0 seconds.</col>");
-	private static final Pattern HALF_TELEBLOCK_PATTERN = Pattern.compile("<col=4f006f>A Tele Block spell has been cast on you by (.+). It will expire in 2 minutes, 30 seconds.</col>");
+	private static final Pattern DEADMAN_HALF_TELEBLOCK_PATTERN = Pattern.compile("<col=4f006f>A Tele Block spell has been cast on you by (.+)\\. It will expire in 1 minute, 15 seconds\\.</col>");
+	private static final Pattern FULL_TELEBLOCK_PATTERN = Pattern.compile("<col=4f006f>A Tele Block spell has been cast on you by (.+)\\. It will expire in 5 minutes\\.</col>");
+	private static final Pattern HALF_TELEBLOCK_PATTERN = Pattern.compile("<col=4f006f>A Tele Block spell has been cast on you by (.+)\\. It will expire in 2 minutes, 30 seconds\\.</col>");
+	private static final Pattern DIVINE_POTION_PATTERN = Pattern.compile("You drink some of your divine (.+) potion\\.");
 
 	private TimerTimer freezeTimer;
 	private int freezeTime = -1; // time frozen, in game ticks
@@ -269,6 +271,16 @@ public class TimersPlugin extends Plugin
 			removeGameTimer(PRAYER_ENHANCE);
 		}
 
+		if (!config.showDivine())
+		{
+			removeGameTimer(DIVINE_SUPER_ATTACK);
+			removeGameTimer(DIVINE_SUPER_STRENGTH);
+			removeGameTimer(DIVINE_SUPER_DEFENCE);
+			removeGameTimer(DIVINE_SUPER_COMBAT);
+			removeGameTimer(DIVINE_RANGING);
+			removeGameTimer(DIVINE_MAGIC);
+		}
+
 		if (!config.showCannon())
 		{
 			removeGameTimer(CANNON);
@@ -312,11 +324,8 @@ public class TimersPlugin extends Plugin
 		if (!config.showFreezes())
 		{
 			removeGameTimer(BIND);
-			removeGameTimer(HALFBIND);
 			removeGameTimer(SNARE);
-			removeGameTimer(HALFSNARE);
 			removeGameTimer(ENTANGLE);
-			removeGameTimer(HALFENTANGLE);
 			removeGameTimer(ICERUSH);
 			removeGameTimer(ICEBURST);
 			removeGameTimer(ICEBLITZ);
@@ -382,7 +391,11 @@ public class TimersPlugin extends Plugin
 		if (config.showStamina()
 			&& event.getMenuOption().contains("Drink")
 			&& (event.getId() == ItemID.STAMINA_MIX1
-			|| event.getId() == ItemID.STAMINA_MIX2))
+			|| event.getId() == ItemID.STAMINA_MIX2
+			|| event.getId() == ItemID.EGNIOL_POTION_1
+			|| event.getId() == ItemID.EGNIOL_POTION_2
+			|| event.getId() == ItemID.EGNIOL_POTION_3
+			|| event.getId() == ItemID.EGNIOL_POTION_4))
 		{
 			// Needs menu option hook because mixes use a common drink message, distinct from their standard potion messages
 			createGameTimer(STAMINA);
@@ -528,9 +541,7 @@ public class TimersPlugin extends Plugin
 			}
 			else if (HALF_TELEBLOCK_PATTERN.matcher(event.getMessage()).find())
 			{
-				if (client.getWorldType().contains(WorldType.DEADMAN)
-					&& !client.getWorldType().contains(WorldType.SEASONAL_DEADMAN)
-					&& !client.getWorldType().contains(WorldType.DEADMAN_TOURNAMENT))
+				if (client.getWorldType().contains(WorldType.DEADMAN))
 				{
 					createGameTimer(DMM_FULLTB);
 				}
@@ -542,6 +553,10 @@ public class TimersPlugin extends Plugin
 			else if (DEADMAN_HALF_TELEBLOCK_PATTERN.matcher(event.getMessage()).find())
 			{
 				createGameTimer(DMM_HALFTB);
+			}
+			else if (event.getMessage().startsWith(KILLED_TELEBLOCK_OPPONENT_TEXT))
+			{
+				removeTbTimers();
 			}
 		}
 
@@ -576,6 +591,11 @@ public class TimersPlugin extends Plugin
 			createGameTimer(PRAYER_ENHANCE);
 		}
 
+		if (config.showPrayerEnhance() && event.getMessage().equals(PRAYER_ENHANCE_EXPIRED))
+		{
+			removeGameTimer(PRAYER_ENHANCE);
+		}
+
 		if (config.showCharge() && event.getMessage().equals(CHARGE_MESSAGE))
 		{
 			createGameTimer(CHARGE);
@@ -600,6 +620,40 @@ public class TimersPlugin extends Plugin
 		{
 			freezeTimer = createGameTimer(ICEBARRAGE);
 			freezeTime = client.getTickCount();
+		}
+
+		if (config.showDivine())
+		{
+			Matcher mDivine = DIVINE_POTION_PATTERN.matcher(event.getMessage());
+			if (mDivine.find())
+			{
+				switch (mDivine.group(1))
+				{
+					case "super attack":
+						createGameTimer(DIVINE_SUPER_ATTACK);
+						break;
+
+					case "super strength":
+						createGameTimer(DIVINE_SUPER_STRENGTH);
+						break;
+
+					case "super defence":
+						createGameTimer(DIVINE_SUPER_DEFENCE);
+						break;
+
+					case "combat":
+						createGameTimer(DIVINE_SUPER_COMBAT);
+						break;
+
+					case "ranging":
+						createGameTimer(DIVINE_RANGING);
+						break;
+
+					case "magic":
+						createGameTimer(DIVINE_MAGIC);
+						break;
+				}
+			}
 		}
 	}
 
@@ -706,6 +760,11 @@ public class TimersPlugin extends Plugin
 			}
 		}
 
+		if (config.showDFSSpecial() && lastAnimation == AnimationID.DRAGONFIRE_SHIELD_SPECIAL)
+		{
+			createGameTimer(DRAGON_FIRE_SHIELD);
+		}
+
 		lastAnimation = client.getLocalPlayer().getAnimation();
 	}
 
@@ -728,44 +787,17 @@ public class TimersPlugin extends Plugin
 		{
 			if (actor.getGraphic() == BIND.getGraphicId())
 			{
-				if (client.isPrayerActive(Prayer.PROTECT_FROM_MAGIC)
-					&& !client.getWorldType().contains(WorldType.SEASONAL_DEADMAN)
-					&& !client.getWorldType().contains(WorldType.DEADMAN_TOURNAMENT))
-				{
-					createGameTimer(HALFBIND);
-				}
-				else
-				{
-					createGameTimer(BIND);
-				}
+				createGameTimer(BIND);
 			}
 
 			if (actor.getGraphic() == SNARE.getGraphicId())
 			{
-				if (client.isPrayerActive(Prayer.PROTECT_FROM_MAGIC)
-					&& !client.getWorldType().contains(WorldType.SEASONAL_DEADMAN)
-					&& !client.getWorldType().contains(WorldType.DEADMAN_TOURNAMENT))
-				{
-					createGameTimer(HALFSNARE);
-				}
-				else
-				{
-					createGameTimer(SNARE);
-				}
+				createGameTimer(SNARE);
 			}
 
 			if (actor.getGraphic() == ENTANGLE.getGraphicId())
 			{
-				if (client.isPrayerActive(Prayer.PROTECT_FROM_MAGIC)
-					&& !client.getWorldType().contains(WorldType.SEASONAL_DEADMAN)
-					&& !client.getWorldType().contains(WorldType.DEADMAN_TOURNAMENT))
-				{
-					createGameTimer(HALFENTANGLE);
-				}
-				else
-				{
-					createGameTimer(ENTANGLE);
-				}
+				createGameTimer(ENTANGLE);
 			}
 
 			// downgrade freeze based on graphic, if at the same tick as the freeze message
@@ -852,17 +884,28 @@ public class TimersPlugin extends Plugin
 	}
 
 	@Subscribe
-	public void onLocalPlayerDeath(LocalPlayerDeath event)
+	public void onPlayerDeath(PlayerDeath playerDeath)
 	{
-		infoBoxManager.removeIf(t -> t instanceof TimerTimer && ((TimerTimer) t).getTimer().isRemovedOnDeath());
+		if (playerDeath.getPlayer() == client.getLocalPlayer())
+		{
+			infoBoxManager.removeIf(t -> t instanceof TimerTimer && ((TimerTimer) t).getTimer().isRemovedOnDeath());
+		}
 	}
 
 	private TimerTimer createGameTimer(final GameTimer timer)
 	{
 		removeGameTimer(timer);
 
-		BufferedImage image = timer.getImage(itemManager, spriteManager);
-		TimerTimer t = new TimerTimer(timer, this, image);
+		TimerTimer t = new TimerTimer(timer, this);
+		switch (timer.getImageType())
+		{
+			case SPRITE:
+				spriteManager.getSpriteAsync(timer.getImageId(), 0, t);
+				break;
+			case ITEM:
+				t.setImage(itemManager.getImage(timer.getImageId()));
+				break;
+		}
 		t.setTooltip(timer.getDescription());
 		infoBoxManager.addInfoBox(t);
 		return t;
@@ -877,8 +920,16 @@ public class TimersPlugin extends Plugin
 	{
 		removeGameIndicator(gameIndicator);
 
-		BufferedImage image = gameIndicator.getImage(itemManager, spriteManager);
-		IndicatorIndicator indicator = new IndicatorIndicator(gameIndicator, image, this);
+		IndicatorIndicator indicator = new IndicatorIndicator(gameIndicator, this);
+		switch (gameIndicator.getImageType())
+		{
+			case SPRITE:
+				spriteManager.getSpriteAsync(gameIndicator.getImageId(), 0, indicator);
+				break;
+			case ITEM:
+				indicator.setImage(itemManager.getImage(gameIndicator.getImageId()));
+				break;
+		}
 		indicator.setTooltip(gameIndicator.getDescription());
 		infoBoxManager.addInfoBox(indicator);
 
